@@ -1373,8 +1373,13 @@ def clean_latex(text: str) -> tuple[str, list[str]]:
 # HTML
 # ---------------------------------------------------------------------------
 
+# Quote-aware on purpose: the body skips over quoted attribute values, so a
+# '>' inside a quoted `content` ("Compare Claude > GPT-4o") neither truncates
+# the tag nor leaves the rest of the attribute behind as stray text. Without
+# this, `_meta_attrs` never saw a value past the '>' and the whole-tag scan
+# judged the truncated prefix, dropping the owner's own prose.
 _META_TAG_RE = re.compile(
-    r"<meta\b[^>]*>",
+    r"""<meta\b(?:"[^"]*"|'[^']*'|[^>"'])*>""",
     re.I,
 )
 _META_ATTR_RE = re.compile(
