@@ -722,6 +722,37 @@ def _parse_simple_yaml_keys(block: str) -> list[tuple[str, str, int]]:
     return rows
 
 
+def _fm_value_continuation(lines: list[str], start: int, end: int) -> str:
+    """Value lines that continue a top-level key between two key lines.
+
+    Block scalars (`key: >` / `key: |`), wrapped plain values, and list items
+    (`- item`) all carry the value on the lines after the key. The extent is
+    the same one the clean path already drops: nested content up to the next
+    top-level key (or the end of the frontmatter block).
+    """
+    parts: list[str] = []
+    for line in lines[start:end]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue  # blank lines and comments belong to whichever block they sit in
+        if line[0] in (" ", "\t", "-"):
+            parts.append(stripped)
+    return "\n".join(parts)
+
+
+def _fm_joined_value(
+    rows: list[tuple[str, str, int]], idx: int, lines: list[str]
+) -> str:
+    """The value of rows[idx] across its continuation lines, newline-joined."""
+    _key, line, i = rows[idx]
+    val = line.split(":", 1)[1] if ":" in line else ""
+    end = rows[idx + 1][2] if idx + 1 < len(rows) else len(lines)
+    cont = _fm_value_continuation(lines, i + 1, end)
+    if cont:
+        val = f"{val}\n{cont}" if val.strip() else cont
+    return val
+
+
 # Frontmatter keys that are Claude Code agent/skill *configuration* and happen
 # to collide with provenance key names. `model:` is in AI_FRONTMATTER_KEYS --
 # correct for a generated document, wrong for `.claude/agents/*.md`, where
@@ -750,17 +781,19 @@ def inspect_markdown(text: str) -> tuple[bool, bool, list[str], dict]:
     if m:
         has_fm = True
         block = m.group(1)
+        block_lines = block.splitlines()
         rows = _parse_simple_yaml_keys(block)
         is_agent = _is_agent_frontmatter([k for k, _l, _i in rows])
-        for key, _line, _i in rows:
+        for idx, (key, _line, _i) in enumerate(rows):
             keys.append(key)
             if is_agent and key.lower() in _AGENT_CONFIG_KEYS:
                 pass  # agent configuration, not provenance -- value still checked below
             elif key.lower() in AI_FRONTMATTER_KEYS or AI_META_NAME_RE.search(key):
                 has_ai = True
                 findings.append(f"frontmatter key: {key}")
-            # also check value
-            val = _line.split(":", 1)[1] if ":" in _line else ""
+            # also check value -- it may span continuation lines (block
+            # scalars, wrapped values, list items), so scan the joined text
+            val = _fm_joined_value(rows, idx, block_lines)
             if named_value_is_ai(key, val):
                 has_ai = True
                 findings.append(f"frontmatter value hit on {key}")
@@ -786,10 +819,13 @@ def clean_markdown(text: str) -> tuple[str, list[str]]:
     if m:
         block = m.group(1)
         body = text[m.end() :]
+        block_lines = block.splitlines()
+        rows = _parse_simple_yaml_keys(block)
+        row_at = {i: n for n, (_k, _l, i) in enumerate(rows)}
         kept: list[str] = []
         dropping = False  # inside the nested block of a dropped top-level key
-        is_agent = _is_agent_frontmatter([k for k, _l, _i in _parse_simple_yaml_keys(block)])
-        for line in block.splitlines():
+        is_agent = _is_agent_frontmatter([k for k, _l, _i in rows])
+        for li, line in enumerate(block_lines):
             stripped = line.strip()
 
             # Blank lines and comments belong to whichever block we are inside.
@@ -811,7 +847,12 @@ def clean_markdown(text: str) -> tuple[str, list[str]]:
                 continue
 
             key = km.group(1)
-            val = line.split(":", 1)[1] if ":" in line else ""
+            # A value may span continuation lines (block scalars, wrapped
+            # values, list items); scan the joined text -- the same text
+            # inspect_markdown sees -- so a phrase hidden there cannot
+            # survive, and the dropping logic below removes the whole block.
+            n = row_at.get(li)
+            val = _fm_joined_value(rows, n, block_lines) if n is not None else ""
             if is_agent and key.lower() in _AGENT_CONFIG_KEYS:
                 pass  # agent configuration -- fall through to the value check
             elif key.lower() in AI_FRONTMATTER_KEYS or AI_META_NAME_RE.search(key):
