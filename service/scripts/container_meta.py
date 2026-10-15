@@ -1596,8 +1596,10 @@ def inspect_html(text: str) -> tuple[bool, bool, list[str], dict]:
         findings.append(f"comment: {block[:120]}")
         if re.search(r"c2pa|content.?credential", block, re.I):
             has_c2pa = True
-    # data-ai* attributes
-    for m in re.finditer(r"\bdata-ai[\w-]*\s*=\s*[\"'][^\"']*[\"']", text, re.I):
+    # data-ai* attributes. The optional separator group keeps the match to
+    # the bare `data-ai` attribute or a `data-ai-*`/`data-ai_*` provenance name;
+    # without it, `data-aid` / `data-airline` matched too (issue #395).
+    for m in re.finditer(r"\bdata-ai(?:[-_][\w-]*)?\s*=\s*[\"'][^\"']*[\"']", text, re.I):
         has_ai = True
         findings.append(f"attr: {m.group(0)[:80]}")
 
@@ -1649,7 +1651,7 @@ def clean_html(text: str) -> tuple[str, list[str]]:
     out, n = _drop_provenance_comments(out)
     if n:
         actions.append(f"drop AI provenance comment x{n}")
-    out2, n = re.subn(r"\sdata-ai[\w-]*\s*=\s*[\"'][^\"']*[\"']", "", out, flags=re.I)
+    out2, n = re.subn(r"\sdata-ai(?:[-_][\w-]*)?\s*=\s*[\"'][^\"']*[\"']", "", out, flags=re.I)
     if n:
         actions.append(f"drop data-ai* attributes x{n}")
         out = out2
