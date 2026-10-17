@@ -98,6 +98,7 @@ bench-human-corpus:
 	$(PYTHON) $(SCRIPTS)/fetch_human_corpus.py --cache-dir .gutenberg-cache
 
 bench-human-fpr:
+	set -a; [ -f .env ] && . ./.env; set +a; \
 	$(PYTHON) $(SCRIPTS)/bench_human_fpr.py --out-dir out/bench-human-fpr $(if $(BACKENDS),$(foreach b,$(BACKENDS),--backend $(b)),)
 
 bench-semantic:
