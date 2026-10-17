@@ -740,9 +740,7 @@ def _fm_value_continuation(lines: list[str], start: int, end: int) -> str:
     return "\n".join(parts)
 
 
-def _fm_joined_value(
-    rows: list[tuple[str, str, int]], idx: int, lines: list[str]
-) -> str:
+def _fm_joined_value(rows: list[tuple[str, str, int]], idx: int, lines: list[str]) -> str:
     """The value of rows[idx] across its continuation lines, newline-joined."""
     _key, line, i = rows[idx]
     val = line.split(":", 1)[1] if ":" in line else ""
