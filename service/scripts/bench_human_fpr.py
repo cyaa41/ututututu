@@ -15,9 +15,9 @@ reports, per backend:
   - how many texts were too short to score at all (stylometry < 30 words)
   - the worst offenders, for manual inspection
 
-A backend that fails to load degrades to stylometry inside HumanLikeness; the
-report records the backend actually used so a fallback is never mistaken for
-the requested detector.
+A backend that fails to load or run degrades to stylometry inside
+HumanLikeness. Those fallback scores would only duplicate the stylometry row,
+so the backend is reported as unavailable (with the reason) and not scored.
 
 Exit codes:
   0  report written
@@ -135,22 +135,28 @@ def run(args: argparse.Namespace, docs: list[tuple[str, str]]) -> dict[str, Any]
             backend, args.human_detector_dir, pangram_model=args.human_pangram_model
         )
         scores = human.score_many([text for _, text in docs])
-        used = human.backend_used
+        # Checked after scoring: a backend can load fine and still fail mid-run
+        # (e.g. HTTP 402 on the bulk job), which also flips it to stylometry.
+        if human.backend_used != backend:
+            eprint(f"warning: {backend} unavailable ({human.reason()}); skipped")
+            report["backends"].append(
+                {"requested": backend, "available": False, "reason": human.reason()}
+            )
+            continue
         threshold = (
-            args.threshold if args.threshold is not None else DEFAULT_THRESHOLDS.get(used, 0.5)
+            args.threshold if args.threshold is not None else DEFAULT_THRESHOLDS.get(backend, 0.5)
         )
-        entry = {
-            "requested": backend,
-            "used": used,
-            "reason": human.reason(),
-            "threshold": threshold,
-            **summarize(docs, scores, threshold, edges),
-        }
-        if used != backend:
-            eprint(f"warning: {backend} unavailable ({human.reason()}); scored with {used}")
-        report["backends"].append(entry)
+        report["backends"].append(
+            {
+                "requested": backend,
+                "available": True,
+                "reason": human.reason(),
+                "threshold": threshold,
+                **summarize(docs, scores, threshold, edges),
+            }
+        )
         for row, s in zip(report["docs"], scores, strict=True):
-            row["scores"][f"{backend}->{used}" if used != backend else backend] = s
+            row["scores"][backend] = s
     return report
 
 
@@ -167,7 +173,10 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
     ]
     for b in report["backends"]:
-        name = b["used"] if b["used"] == b["requested"] else f"{b['requested']} -> {b['used']}"
+        name = b["requested"]
+        if not b["available"]:
+            lines += [f"## {name}: unavailable", "", f"Not scored: {b['reason']}", ""]
+            continue
         ci = b["ci95"]
         ci_txt = f" (95% CI {_pct(ci[0])}-{_pct(ci[1])})" if ci else ""
         lines += [

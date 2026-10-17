@@ -122,11 +122,27 @@ def test_run_records_fallback_backend(monkeypatch):
     )
     report = fpr.run(args, [("short", "w " * 50), ("long", "w " * 200)])
     b = report["backends"][0]
-    assert b["requested"] == "pangram" and b["used"] == "stylometry"
-    assert b["threshold"] == fpr.STYLOMETRY_THRESHOLD
+    assert b == {"requested": "pangram", "available": False, "reason": "PANGRAM_API_KEY not set"}
+    assert report["docs"][0]["scores"] == {}
+    md = fpr.render_markdown(report)
+    assert "## pangram: unavailable" in md and "PANGRAM_API_KEY not set" in md
+
+
+def test_run_scores_available_backend(monkeypatch):
+    monkeypatch.setattr(fpr, "HumanLikeness", _StubDetector)
+    args = argparse.Namespace(
+        corpus=Path("x"),
+        backend=["stylometry"],
+        bins=[100, 300],
+        threshold=None,
+        human_detector_dir=None,
+        human_pangram_model=None,
+    )
+    report = fpr.run(args, [("short", "w " * 50), ("long", "w " * 200)])
+    b = report["backends"][0]
+    assert b["available"] and b["threshold"] == fpr.STYLOMETRY_THRESHOLD
     assert b["fpr"] == 0.5
-    assert "pangram->stylometry" in report["docs"][0]["scores"]
-    assert "pangram -> stylometry" in fpr.render_markdown(report)
+    assert report["docs"][0]["scores"] == {"stylometry": 0.8}
 
 
 def test_main_end_to_end_with_stylometry(tmp_path, monkeypatch, capsys):
@@ -142,7 +158,7 @@ def test_main_end_to_end_with_stylometry(tmp_path, monkeypatch, capsys):
     assert fpr.main() == 0
     report = json.loads((out / "results.json").read_text())
     b = report["backends"][0]
-    assert b["used"] == "stylometry" and b["unscored"] == 1 and b["n"] == 1
+    assert b["available"] and b["unscored"] == 1 and b["n"] == 1
     assert "Detector false positives" in capsys.readouterr().out
 
 
