@@ -95,7 +95,7 @@ def test_multiline_values_without_markers_are_kept():
         "---\n"
         "Body\n"
     )
-    cleaned, actions = clean_markdown(md)
+    cleaned, _ = clean_markdown(md)
     assert "An ordinary multi-line" in cleaned
     assert "- one" in cleaned and "- two" in cleaned
     _c2, has_ai, _findings, _d = inspect_markdown(md)
