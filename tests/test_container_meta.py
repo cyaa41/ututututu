@@ -112,6 +112,33 @@ def test_html_meta_strip():
     assert any("drop" in a for a in actions)
 
 
+def test_html_data_ai_prefix_attributes_not_ai():
+    # Issue #395: the scan matched any attribute name starting with "data-ai",
+    # so ordinary application attributes were flagged and silently stripped.
+    html = (
+        '<html><body><div data-aid="42">Donor</div>'
+        '<span data-airline="LH">Lufthansa</span></body></html>'
+    )
+    _c2, has_ai, findings, _ = inspect_html(html)
+    assert not has_ai, findings
+    cleaned, actions = clean_html(html)
+    assert 'data-aid="42"' in cleaned
+    assert 'data-airline="LH"' in cleaned
+    assert "no HTML AI meta removed" in actions
+
+
+@pytest.mark.parametrize(
+    "attr",
+    ['data-ai="gpt"', 'data-ai-generated="yes"', "data-ai_model='gpt'"],
+)
+def test_html_data_ai_metadata_attributes_still_stripped(attr):
+    html = f"<html><body><div {attr}>Hi</div></body></html>"
+    _c2, has_ai, findings, _ = inspect_html(html)
+    assert has_ai, findings
+    cleaned, _actions = clean_html(html)
+    assert attr.split("=")[0] not in cleaned
+
+
 def test_html_cms_generator_not_ai():
     html = '<meta name="generator" content="WordPress 6.0">'
     has_c2pa, has_ai, findings, _ = inspect_html(html)
