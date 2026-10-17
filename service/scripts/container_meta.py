@@ -19,10 +19,11 @@ import time
 import urllib.parse
 import zipfile
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree as ET
 
 from common import (
     c2patool_probe_note,
@@ -2012,8 +2013,110 @@ def _zip_namelist(data: bytes) -> list[str]:
 
 
 def _is_docx_meta_part(name: str) -> bool:
-    """Return True for DOCX/XLSX/PPTX parts that carry provenance, not visible content."""
-    return name.startswith(("docProps/", "customXml/"))
+    """Return True for OOXML parts that carry provenance or add-in state."""
+    low = name.lower()
+    return low.startswith(("docprops/", "customxml/")) or _is_ooxml_webextension_part(name)
+
+
+def _is_ooxml_webextension_part(name: str) -> bool:
+    """True for Office add-in metadata parts in Word, Excel, and PowerPoint."""
+    return bool(re.match(r"^(?:word|xl|ppt)/webextensions/", name, re.I))
+
+
+def office_owner_file(path: Path) -> Path | None:
+    """Return a sibling Office owner file that suggests the document is open."""
+    if not path.name:
+        return None
+    names = [f"~${path.name}"]
+    if len(path.name) > 2:
+        names.append(f"~${path.name[2:]}")
+    for name in dict.fromkeys(names):
+        candidate = path.with_name(name)
+        if candidate.exists():
+            return candidate
+    return None
+
+
+_WEBEXTENSION_MAX_FINDINGS = 30
+_WEBEXTENSION_AI_VENDOR_PREFIXES = (
+    "anthropic.",
+    "chatgpt.",
+    "claude.",
+    "copilot.",
+    "gemini.",
+    "openai.",
+    "synthid.",
+)
+
+
+class _WebExtensionFindingsLimitReached(Exception):
+    pass
+
+
+class _WebExtensionDoctypeRejected(Exception):
+    pass
+
+
+class _WebExtensionFindingsTarget:
+    """Stream XML start events without building a document tree."""
+
+    def __init__(self, on_start: Callable[[str, dict[str, str]], None]) -> None:
+        self._on_start = on_start
+
+    def start(self, tag: str, attributes: dict[str, str]) -> None:
+        self._on_start(tag, attributes)
+
+    def end(self, _tag: str) -> None:
+        pass
+
+    def data(self, _text: str) -> None:
+        pass
+
+    def doctype(self, *_args: object) -> None:
+        raise _WebExtensionDoctypeRejected
+
+    def close(self) -> None:
+        return None
+
+
+def _webextension_findings(name: str, raw: bytes) -> list[str]:
+    """Report Office add-in properties and references without scanning body text."""
+    findings: list[str] = []
+
+    def on_start(tag: str, attributes: dict[str, str]) -> None:
+        local_name = tag.rsplit("}", 1)[-1].casefold()
+        attributes_by_name = {
+            key.rsplit("}", 1)[-1].casefold(): value.strip() for key, value in attributes.items()
+        }
+        if local_name == "property":
+            property_name = attributes_by_name.get("name", "")
+            if property_name:
+                normalized = property_name.casefold()
+                vendor_property = any(
+                    normalized.startswith(prefix) or f".{prefix}" in normalized
+                    for prefix in _WEBEXTENSION_AI_VENDOR_PREFIXES
+                )
+                if vendor_property:
+                    findings.append(f"{name}: web-extension vendor property {property_name}")
+                else:
+                    findings.append(f"{name}: meta: web-extension property {property_name}")
+        elif local_name == "reference":
+            reference_id = attributes_by_name.get("id", "")
+            if reference_id:
+                findings.append(f"{name}: meta: web-extension reference id={reference_id}")
+        if len(findings) >= _WEBEXTENSION_MAX_FINDINGS:
+            raise _WebExtensionFindingsLimitReached
+
+    # The target rejects DOCTYPE declarations before entity declarations can be used.
+    parser = ET.XMLParser(target=_WebExtensionFindingsTarget(on_start))  # noqa: S314
+    with contextlib.suppress(
+        _WebExtensionFindingsLimitReached,
+        _WebExtensionDoctypeRejected,
+        ET.ParseError,
+    ):
+        parser.feed(raw)
+        parser.close()
+    return findings
 
 
 def _inspect_ooxml_zip(
@@ -2070,13 +2173,37 @@ def _inspect_ooxml_zip(
                 if not _is_docx_meta_part(name):
                     continue
                 raw = _read_zip_member(zf, info, budget)
+                webextension_part = _is_ooxml_webextension_part(name)
+                if webextension_part:
+                    webextension_hits = _webextension_findings(name, raw)
+                    if webextension_hits:
+                        if any(
+                            "web-extension vendor property " in hit for hit in webextension_hits
+                        ):
+                            has_ai = True
+                        findings.extend(webextension_hits)
                 c2, ai, hits = _blob_hits(raw)
+                if webextension_part and webextension_hits:
+                    # The structured finding already names a parsed vendor
+                    # property/reference. Avoid repeating the same vendor as
+                    # a weaker raw marker hit (e.g. "claude.fileId" plus
+                    # "ai:claude"). Keep unrelated markers and all C2PA hits.
+                    structured_text = " ".join(webextension_hits).casefold()
+                    hits = [
+                        hit
+                        for hit in hits
+                        if not (
+                            hit.lower().startswith("ai:")
+                            and hit.split(":", 1)[1].strip().casefold() in structured_text
+                        )
+                    ]
                 if c2 or ai:
                     if c2:
                         has_c2pa = True
                     if ai:
                         has_ai = True
-                    findings.append(f"{name}: {', '.join(hits[:6])}")
+                    if hits:
+                        findings.append(f"{name}: {', '.join(hits[:6])}")
             # always flag customXml presence lightly
             custom = [n for n in parts if n.startswith("customXml/")]
             if custom:
@@ -2563,6 +2690,13 @@ def _scrub_ooxml_zip(
                 actions.append(f"drop part {name}")
                 continue
 
+            # 2a. Office add-in state is stored outside the visible document
+            # body. Drop it from all supported OOXML packages; relationships
+            # to these parts are pruned after the archive is rewritten.
+            if _is_ooxml_webextension_part(name):
+                actions.append(f"drop Office web-extension part {name}")
+                continue
+
             # 3. docProps/ provenance
             if name in DOCX_META_PARTS or name.startswith("docProps/"):
                 if name.endswith("custom.xml"):
@@ -2612,6 +2746,15 @@ def _scrub_ooxml_zip(
                 )
                 if n:
                     actions.append(f"drop Content_Types custom.xml override x{n}")
+                    raw = new.encode("utf-8")
+                new, n = re.subn(
+                    r"""<Override\b(?=[^>]*\bPartName\s*=\s*["']/(?:word|xl|ppt)/webextensions/)[^>]*/>""",
+                    "",
+                    raw.decode("utf-8", errors="replace"),
+                    flags=re.I,
+                )
+                if n:
+                    actions.append(f"drop Content_Types web-extension overrides x{n}")
                     raw = new.encode("utf-8")
 
             # 5. Layer A text runs
@@ -4462,6 +4605,12 @@ def clean_container(
     data = path.read_bytes()
     fmt = fmt or detect_container_format(path, data)
     actions: list[str] = []
+    if fmt in {"docx", "xlsx", "pptx"}:
+        owner_file = office_owner_file(path)
+        if owner_file is not None:
+            raise ValueError(
+                f"refusing to clean an Office package while its owner file exists: {owner_file.name}"
+            )
     dest.parent.mkdir(parents=True, exist_ok=True)
     meta: dict[str, Any] = {"format": fmt}
 
