@@ -25,6 +25,10 @@
 | C2PA soft binding (in-content link to manifest) | — | Out of scope (survives our metadata strip) | — | Vendor detector only |
 | Data-driven model backdoors | — | Out of scope | — | — |
 
+OOXML cleaning preserves relationships to retained document and media parts even
+when their targets use XML character references such as `&#100;` or `&amp;`.
+Relationships to removed or missing parts are pruned.
+
 ## Default pipeline
 
 1. **Inspect** (`inspect_file.py` or specific inspect_*).
