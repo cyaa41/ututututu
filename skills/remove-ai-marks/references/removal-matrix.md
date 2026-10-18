@@ -13,10 +13,10 @@
 | EPUB OPF metadata / XHTML meta / embedded media | Scrub OPF, strip XHTML meta/JSON-LD, clean embedded media, Layer A (skip encrypted parts) | `clean_file.py` | Loses book metadata; rewrites archive | Yes (re-inspect) |
 | SVG metadata / XMP / embedded data URIs | Drop `<metadata>`, xmpmeta; clean embedded data URIs | `clean_file.py` | Loses SVG metadata; cleans embedded rasters | Yes (re-inspect) |
 | PDF XMP / info | exiftool `-all=` preferred | `clean_file.py` | Loses PDF metadata; degraded without exiftool | Partial |
-| DOCX / XLSX / PPTX props / customXml / embedded media | Rewrite OOXML zip, scrub text runs, clean media/ | `clean_file.py` | Loses doc properties; cleans embedded rasters | Yes |
+| DOCX / XLSX / PPTX props / customXml / Office web-extension add-in metadata / embedded media | Inspect vendor properties and references; rewrite OOXML zip, drop webextensions parts and their content-type overrides, prune dangling relationships, scrub text runs, clean media | `clean_file.py` | Loses document and add-in metadata; cleaning is refused while a matching Office owner lock file exists; cleans embedded rasters | Yes (re-inspect) |
 | ODT meta:generator | Scrub `meta.xml` | `clean_file.py` | Loses generator tag | Yes |
-| HTML generator / JSON-LD / embedded data URIs | Strip tags; clean embedded data URIs | `clean_file.py` | Loses meta; cleans embedded rasters; `content` prose under a non-naming `<meta name>` is left alone | Yes |
-| Markdown AI frontmatter keys / embedded data URIs | Drop keys; clean embedded data URIs | `clean_file.py` | Loses YAML keys; cleans embedded rasters; prose values under a non-naming key are left alone | Yes |
+| HTML generator / JSON-LD / provenance comments (AI tool name, AI-generated, C2PA, content credential) / embedded data URIs | Strip tags and comments; clean embedded data URIs | `clean_file.py` | Loses meta; cleans embedded rasters; `content` prose under a non-naming `<meta name>` is left alone | Yes |
+| Markdown AI frontmatter keys / provenance comments (AI tool name, AI-generated, C2PA, content credential) / embedded data URIs | Drop keys and comments outside code fences; clean embedded data URIs | `clean_file.py` | Loses YAML keys; cleans embedded rasters; prose values under a non-naming key are left alone | Yes |
 | Pixel image watermark (SynthID-media / StegaStamp / Tree-Ring / StableSignature) | CtrlRegen regeneration (external backend) | `clean_ctrlregen.py` / `clean_image.py --remove-pixel ctrlregen` | Regenerates pixels; heavy compute; detail drift at higher intensity | No without official detector; reverse-SynthID score is a local surrogate; **MarkDiffusion same-scheme harness** (`markdiffusion_harness.py detect`) verifies a Tree-Ring-class scheme config before/after |
 | Pixel image watermark (Tree-Ring-class) | DiffusionPurification regeneration (external MarkDiffusion backend) | `clean_image.py --remove-pixel diffusion` | Blind regeneration; more drift than CtrlRegen; heavy compute | Same-scheme only via the MarkDiffusion harness (not a vendor-detector oracle) |
 | TrustMark video watermark (per-frame + temporal vote) | Per-frame pixel purification (CtrlRegen / DiffusionPurification) + ffmpeg demux/remux, guided by a vote-collapse frame planner | `/clean` (kind=av, `options.remove_pixel` = `ctrlregen`\|`diffusion`) | Re-encodes video (lossy); heavy compute; needs `tools.ffmpeg` + `pixel_backends` present; raises the purge count to the minimum that crosses `vote_threshold` | Model-based (`vote_threshold`); not vendor-detector-verified |
@@ -24,6 +24,10 @@
 | Audio watermarks (silentcipher / AudioSeal / WavMark) | Destructive transform chain (tempo + pitch + EQ + low-bitrate lossy re-encode) | `/clean` (kind=av, `options.remove_audio_watermark` = true) | Alters pitch/tempo/quality/duration; returns M4A/AAC; needs `tools.ffmpeg` | Not vendor-detector-verified (we do not ship silentcipher/AudioSeal/WavMark decoders) |
 | C2PA soft binding (in-content link to manifest) | — | Out of scope (survives our metadata strip) | — | Vendor detector only |
 | Data-driven model backdoors | — | Out of scope | — | — |
+
+OOXML cleaning preserves relationships to retained document and media parts even
+when their targets use XML character references such as `&#100;` or `&amp;`.
+Relationships to removed or missing parts are pruned.
 
 ## Default pipeline
 
@@ -46,7 +50,8 @@
 | Tactic | When |
 | --- | --- |
 | `paraphrase` | Default; explicit word-choice + syntax churn |
-| `humanize` | Zero-shot "write like a human" token reshuffle |
+| `mlm` | Local masked-LM infill; perturbs token distribution without conversational cadence |
+| `humanize` | Zero-shot "write like a human" token reshuffle (caution: collapsed detector human_like score to 0.02 in benchmarks; prefer paraphrase + mlm) |
 | `backtranslate` | Stronger token reshuffle via pivot language |
 | `structural` | Strongest; most drift (outline → human prose) |
 | `code` | Comments/docstrings/string-literal wording + local identifier renames |
