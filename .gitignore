@@ -37,6 +37,7 @@
 !/README.md
 !/requirements-dev.txt
 !/ruff.toml
+!/.pr_agent.toml
 !/SECURITY.md
 !/stealer/
 !/stealer/**
